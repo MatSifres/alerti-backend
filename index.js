@@ -150,7 +150,7 @@ async function processPending() {
 
     // Si no se convirtió: POST a Bubble
     try {
-      const bubbleResp = await fetch('https://dashboard.alerti.app/api/1.1/wf/actualizar_checkout', {
+      const bubbleResp = await fetch('https://dashboard.alerti.app/api/1.1/wf/render_checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
