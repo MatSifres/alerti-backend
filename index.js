@@ -8,7 +8,7 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cors()); // para pruebas permite cualquier origen; más adelante podés restringirlo
 
 // --- DB ---
 const db = new Database('checkouts.db');
@@ -40,7 +40,6 @@ function getAccessToken(store_id) {
 // --- Endpoint para registrar tienda ---
 app.post('/register_store', (req, res) => {
   const { store_id, access_token } = req.body;
-  const order_id = req.body.order_id || req.body.checkout_id;
   if (!store_id || !access_token) {
     return res.status(400).json({ error: 'Faltan store_id o access_token' });
   }
@@ -59,13 +58,14 @@ app.post('/register_store', (req, res) => {
 
 // --- Endpoint que recibe checkout ---
 app.post('/checkout', (req, res) => {
-  const { store_id, order_id, cart_url } = req.body;
+  const { store_id, cart_url } = req.body;
+  const order_id = req.body.order_id || req.body.checkout_id;
   if (!store_id || !order_id || !cart_url) {
     return res.status(400).json({ error: 'Faltan store_id, order_id o cart_url' });
   }
 
   const now = Date.now();
-  const checkAfter = now + 1 * 60 * 1000; // 60 minutos
+  const checkAfter = now + 1 * 60 * 1000; // 1 minuto para testing; cambiá a 60*60*1000 para producción
 
   try {
     db.prepare(`
@@ -81,7 +81,7 @@ app.post('/checkout', (req, res) => {
 });
 
 // --- endpoint de debug para ver tiendas registradas ---
-const DEBUG_SECRET = process.env.DEBUG_SECRET || 'debug123'; // en Render poné una variable más segura
+const DEBUG_SECRET = process.env.DEBUG_SECRET || 'debug123';
 
 app.get('/debug/stores', (req, res) => {
   const secret = req.query.secret;
@@ -151,7 +151,7 @@ async function processPending() {
       continue;
     }
 
-    // Si no se convirtió: POST a Bubble
+    // Si no se convirtió: POST a Bubble (versión de prueba)
     try {
       const bubbleResp = await fetch('https://dashboard.alerti.app/api/1.1/wf/render_checkout', {
         method: 'POST',
