@@ -40,6 +40,7 @@ function getAccessToken(store_id) {
 // --- Endpoint para registrar tienda ---
 app.post('/register_store', (req, res) => {
   const { store_id, access_token } = req.body;
+  const order_id = req.body.order_id || req.body.checkout_id;
   if (!store_id || !access_token) {
     return res.status(400).json({ error: 'Faltan store_id o access_token' });
   }
