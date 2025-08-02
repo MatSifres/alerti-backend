@@ -8,7 +8,7 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // para pruebas permite cualquier origen; más adelante podés restringirlo
+app.use(cors()); // para pruebas permite cualquier origen; después podés restringirlo
 
 // --- DB ---
 const db = new Database('checkouts.db');
@@ -32,14 +32,36 @@ db.exec(`
 `);
 
 // --- Helpers ---
-function getAccessToken(store_id) {
-  const row = db.prepare(`SELECT access_token FROM stores WHERE store_id = ?`).get(store_id);
-  return row ? row.access_token : null;
+function normalizeStoreId(raw) {
+  if (raw == null) return '';
+  let s = String(raw).trim();
+  if (s.endsWith('.0')) {
+    try {
+      s = String(parseInt(parseFloat(s)));
+    } catch {}
+  }
+  return s;
+}
+
+function getAccessToken(store_id_raw) {
+  const store_id = normalizeStoreId(store_id_raw);
+  // probar tal cual
+  let row = db.prepare(`SELECT access_token FROM stores WHERE store_id = ?`).get(store_id);
+  if (row) return row.access_token;
+  // si no encontró, probar con '.0' al final (por si se guardó con ese formato)
+  if (!store_id.endsWith('.0')) {
+    row = db.prepare(`SELECT access_token FROM stores WHERE store_id = ?`).get(store_id + '.0');
+    if (row) return row.access_token;
+  }
+  return null;
 }
 
 // --- Endpoint para registrar tienda ---
 app.post('/register_store', (req, res) => {
-  const { store_id, access_token } = req.body;
+  const raw_store_id = req.body.store_id;
+  const access_token = req.body.access_token;
+  const store_id = normalizeStoreId(raw_store_id);
+
   if (!store_id || !access_token) {
     return res.status(400).json({ error: 'Faltan store_id o access_token' });
   }
@@ -58,14 +80,16 @@ app.post('/register_store', (req, res) => {
 
 // --- Endpoint que recibe checkout ---
 app.post('/checkout', (req, res) => {
-  const { store_id, cart_url } = req.body;
+  let { store_id, cart_url } = req.body;
   const order_id = req.body.order_id || req.body.checkout_id;
+  store_id = normalizeStoreId(store_id);
+
   if (!store_id || !order_id || !cart_url) {
     return res.status(400).json({ error: 'Faltan store_id, order_id o cart_url' });
   }
 
   const now = Date.now();
-  const checkAfter = now + 1 * 60 * 1000; // 1 minuto para testing; cambiá a 60*60*1000 para producción
+  const checkAfter = now + 1 * 60 * 1000; // 1 minuto para testing. Cambiar a 60*60*1000 en producción.
 
   try {
     db.prepare(`
