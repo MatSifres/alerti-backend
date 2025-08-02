@@ -62,7 +62,7 @@ app.post('/checkout', (req, res) => {
   }
 
   const now = Date.now();
-  const checkAfter = now + 60 * 60 * 1000; // 60 minutos
+  const checkAfter = now + 1 * 60 * 1000; // 60 minutos
 
   try {
     db.prepare(`
