@@ -2,11 +2,13 @@ import express from 'express';
 import Database from 'better-sqlite3';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
+import cors from 'cors';
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
+app.use(cors());
 
 // --- DB ---
 const db = new Database('checkouts.db');
