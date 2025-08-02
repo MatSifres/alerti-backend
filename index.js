@@ -61,6 +61,26 @@ app.post('/checkout', (req, res) => {
     return res.status(400).json({ error: 'Faltan store_id, order_id o cart_url' });
   }
 
+  // --- endpoint de debug para ver tiendas registradas ---
+const DEBUG_SECRET = process.env.DEBUG_SECRET || 'debug123'; // cambialo luego en Render
+
+app.get('/debug/stores', (req, res) => {
+  const secret = req.query.secret;
+  if (secret !== DEBUG_SECRET) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  const rows = db.prepare(`
+    SELECT store_id, substr(access_token,1,10) || '...' AS token_preview, created_at
+    FROM stores
+  `).all();
+  const formatted = rows.map(r => ({
+    store_id: r.store_id,
+    access_token_preview: r.token_preview,
+    created_at: new Date(r.created_at).toISOString()
+  }));
+  res.json({ stores: formatted });
+});
+
   const now = Date.now();
   const checkAfter = now + 60 * 60 * 1000; // 60 minutos
 
