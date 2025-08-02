@@ -32,7 +32,7 @@ db.exec(`
 `);
 
 // --- Helpers ---
-function normalizeStoreId(raw) {
+function normalizeId(raw) {
   if (raw == null) return '';
   let s = String(raw).trim();
   if (s.endsWith('.0')) {
@@ -44,11 +44,10 @@ function normalizeStoreId(raw) {
 }
 
 function getAccessToken(store_id_raw) {
-  const store_id = normalizeStoreId(store_id_raw);
-  // probar tal cual
+  const store_id = normalizeId(store_id_raw);
   let row = db.prepare(`SELECT access_token FROM stores WHERE store_id = ?`).get(store_id);
   if (row) return row.access_token;
-  // si no encontró, probar con '.0' al final (por si se guardó con ese formato)
+  // probar con .0 por si se guardó así
   if (!store_id.endsWith('.0')) {
     row = db.prepare(`SELECT access_token FROM stores WHERE store_id = ?`).get(store_id + '.0');
     if (row) return row.access_token;
@@ -60,7 +59,7 @@ function getAccessToken(store_id_raw) {
 app.post('/register_store', (req, res) => {
   const raw_store_id = req.body.store_id;
   const access_token = req.body.access_token;
-  const store_id = normalizeStoreId(raw_store_id);
+  const store_id = normalizeId(raw_store_id);
 
   if (!store_id || !access_token) {
     return res.status(400).json({ error: 'Faltan store_id o access_token' });
@@ -81,15 +80,16 @@ app.post('/register_store', (req, res) => {
 // --- Endpoint que recibe checkout ---
 app.post('/checkout', (req, res) => {
   let { store_id, cart_url } = req.body;
-  const order_id = req.body.order_id || req.body.checkout_id;
-  store_id = normalizeStoreId(store_id);
+  let order_id = req.body.order_id || req.body.checkout_id;
+  store_id = normalizeId(store_id);
+  order_id = normalizeId(order_id);
 
   if (!store_id || !order_id || !cart_url) {
     return res.status(400).json({ error: 'Faltan store_id, order_id o cart_url' });
   }
 
   const now = Date.now();
-  const checkAfter = now + 1 * 60 * 1000; // 1 minuto para testing. Cambiar a 60*60*1000 en producción.
+  const checkAfter = now + 1 * 60 * 1000; // 1 minuto para testing; en producción usar 60*60*1000
 
   try {
     db.prepare(`
@@ -132,7 +132,11 @@ async function processPending() {
     .all(now);
 
   for (const row of pending) {
-    const { checkout_id, store_id, cart_url } = row;
+    // normalizar los IDs para usar en llamadas
+    const checkout_id = normalizeId(row.checkout_id);
+    const store_id = normalizeId(row.store_id);
+    const cart_url = row.cart_url;
+
     console.log(`[worker] procesando ${checkout_id} de store ${store_id}`);
 
     const accessToken = getAccessToken(store_id);
@@ -170,14 +174,14 @@ async function processPending() {
         UPDATE checkouts
         SET status='converted', processed_at=?
         WHERE checkout_id=?
-      `).run(now, checkout_id);
+      `).run(now, row.checkout_id); // manteniendo la llave original
       console.log(`Checkout ${checkout_id} convertido, marcado.`);
       continue;
     }
 
     // Si no se convirtió: POST a Bubble (versión de prueba)
     try {
-      const bubbleResp = await fetch('https://dashboard.alerti.app/api/1.1/wf/render_checkout', {
+      const bubbleResp = await fetch('https://dashboard.alerti.app/version-test/api/1.1/wf/render_checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -197,7 +201,7 @@ async function processPending() {
         UPDATE checkouts
         SET status='abandoned', processed_at=?
         WHERE checkout_id=?
-      `).run(now, checkout_id);
+      `).run(now, row.checkout_id);
 
       console.log(`Recuperación disparada para ${checkout_id}`);
     } catch (err) {
