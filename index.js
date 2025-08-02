@@ -61,8 +61,24 @@ app.post('/checkout', (req, res) => {
     return res.status(400).json({ error: 'Faltan store_id, order_id o cart_url' });
   }
 
-  // --- endpoint de debug para ver tiendas registradas ---
-const DEBUG_SECRET = process.env.DEBUG_SECRET || 'debug123'; // cambialo luego en Render
+  const now = Date.now();
+  const checkAfter = now + 60 * 60 * 1000; // 60 minutos
+
+  try {
+    db.prepare(`
+      INSERT OR IGNORE INTO checkouts
+        (checkout_id, store_id, cart_url, created_at, check_after)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(order_id, store_id, cart_url, now, checkAfter);
+    return res.json({ ok: true, scheduled_for: new Date(checkAfter).toISOString() });
+  } catch (e) {
+    console.error('Error guardando checkout:', e);
+    return res.status(500).json({ error: 'falló guardar' });
+  }
+});
+
+// --- endpoint de debug para ver tiendas registradas ---
+const DEBUG_SECRET = process.env.DEBUG_SECRET || 'debug123'; // en Render poné una variable más segura
 
 app.get('/debug/stores', (req, res) => {
   const secret = req.query.secret;
@@ -79,22 +95,6 @@ app.get('/debug/stores', (req, res) => {
     created_at: new Date(r.created_at).toISOString()
   }));
   res.json({ stores: formatted });
-});
-
-  const now = Date.now();
-  const checkAfter = now + 60 * 60 * 1000; // 60 minutos
-
-  try {
-    db.prepare(`
-      INSERT OR IGNORE INTO checkouts
-        (checkout_id, store_id, cart_url, created_at, check_after)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(order_id, store_id, cart_url, now, checkAfter);
-    return res.json({ ok: true, scheduled_for: new Date(checkAfter).toISOString() });
-  } catch (e) {
-    console.error('Error guardando checkout:', e);
-    return res.status(500).json({ error: 'falló guardar' });
-  }
 });
 
 // --- Worker cada minuto ---
