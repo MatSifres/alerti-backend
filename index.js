@@ -8,7 +8,18 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // para pruebas permite cualquier origen; después podés restringirlo
+
+// CORS explícito (podés cambiar origin a '*' para pruebas rápidas)
+app.use(
+  cors({
+    origin: ['*'],
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
+    preflightContinue: false,
+    optionsSuccessStatus: 204
+  })
+);
+app.options('*', cors()); // responder preflight para todo
 
 // --- DB ---
 const db = new Database('checkouts.db');
@@ -88,7 +99,7 @@ app.post('/checkout', (req, res) => {
   }
 
   const now = Date.now();
-  const checkAfter = now + 1 * 60 * 1000; // 1 minuto para testing; en producción usar 60*60*1000
+  const checkAfter = now + 1 * 60 * 1000; // 1 minuto para testing
 
   try {
     db.prepare(`
@@ -111,11 +122,13 @@ app.get('/debug/stores', (req, res) => {
   if (secret !== DEBUG_SECRET) {
     return res.status(403).json({ error: 'forbidden' });
   }
-  const rows = db.prepare(`
-    SELECT store_id, substr(access_token,1,10) || '...' AS token_preview, created_at
-    FROM stores
-  `).all();
-  const formatted = rows.map(r => ({
+  const rows = db
+    .prepare(`
+      SELECT store_id, substr(access_token,1,10) || '...' AS token_preview, created_at
+      FROM stores
+    `)
+    .all();
+  const formatted = rows.map((r) => ({
     store_id: r.store_id,
     access_token_preview: r.token_preview,
     created_at: new Date(r.created_at).toISOString()
@@ -150,7 +163,7 @@ async function processPending() {
       const resp = await fetch(tiendanubeUrl, {
         method: 'GET',
         headers: {
-          'Authentication': `bearer ${accessToken}`,
+          Authentication: `bearer ${accessToken}`,
           'User-Agent': 'Alerti: (contacto@alerti.app)'
         }
       });
@@ -170,7 +183,7 @@ async function processPending() {
       continue;
     }
 
-    // Extraer el string real de completed_at ya sea que venga como string u objeto
+    // Extraer el string real de completed_at
     let completedDateRaw = null;
     if (orderData && orderData.completed_at) {
       if (typeof orderData.completed_at === 'string') {
@@ -230,7 +243,7 @@ async function processPending() {
 }
 
 setInterval(() => {
-  processPending().catch(e => console.error('Worker error:', e));
+  processPending().catch((e) => console.error('Worker error:', e));
 }, 60 * 1000);
 
 app.get('/health', (req, res) => res.send('ok'));
