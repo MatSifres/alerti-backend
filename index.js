@@ -125,6 +125,46 @@ app.get('/debug/stores', (req, res) => {
   res.json({ stores: formatted });
 });
 
+// --- endpoint de debug para checkouts ---
+app.get('/debug/checkouts', (req, res) => {
+  const secret = req.query.secret;
+  if (secret !== DEBUG_SECRET) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+
+  const storeFilter = req.query.store_id ? normalizeId(req.query.store_id) : null;
+  const statusFilter = req.query.status ? req.query.status : null;
+
+  let baseQuery = `SELECT checkout_id, store_id, cart_url, status, created_at, check_after, processed_at FROM checkouts`;
+  const conditions = [];
+  const params = [];
+
+  if (storeFilter) {
+    conditions.push(`store_id = ?`);
+    params.push(storeFilter);
+  }
+  if (statusFilter) {
+    conditions.push(`status = ?`);
+    params.push(statusFilter);
+  }
+  if (conditions.length) {
+    baseQuery += ' WHERE ' + conditions.join(' AND ');
+  }
+  baseQuery += ' ORDER BY created_at DESC LIMIT 100';
+
+  const rows = db.prepare(baseQuery).all(...params);
+  const formatted = rows.map((r) => ({
+    checkout_id: r.checkout_id,
+    store_id: r.store_id,
+    cart_url: r.cart_url,
+    status: r.status,
+    created_at: new Date(r.created_at).toISOString(),
+    check_after: new Date(r.check_after).toISOString(),
+    processed_at: r.processed_at ? new Date(r.processed_at).toISOString() : null
+  }));
+  res.json({ checkouts: formatted });
+});
+
 // --- Worker cada minuto ---
 async function processPending() {
   const now = Date.now();
