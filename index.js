@@ -208,7 +208,7 @@ async function processPending() {
 
     // Si no se convirtió y tiene teléfono: POST a Bubble (nuevo endpoint de prueba)
     try {
-      const bubbleUrl = 'https://mailsqueeze.bubbleapps.io/version-test/api/1.1/wf/render_checkout/initialize';
+      const bubbleUrl = 'https://mailsqueeze.bubbleapps.io/version-test/api/1.1/wf/render_checkout/';
       const payload = {
         store_id,
         order_id: checkout_id,
