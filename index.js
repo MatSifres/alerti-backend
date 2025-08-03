@@ -1,35 +1,50 @@
 import express from 'express';
-import Database from 'better-sqlite3';
-import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import fetch from 'node-fetch';
+import pkg from 'pg';
+const { Client } = pkg;
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // CORS abierto; podés restringir después
+app.use(cors());
 
-// --- DB ---
-const db = new Database('checkouts.db');
-db.exec(`
-  CREATE TABLE IF NOT EXISTS checkouts (
-    checkout_id TEXT PRIMARY KEY,
-    store_id TEXT,
-    cart_url TEXT,
-    status TEXT DEFAULT 'pending',
-    created_at INTEGER,
-    check_after INTEGER,
-    processed_at INTEGER
-  );
-`);
-db.exec(`
-  CREATE TABLE IF NOT EXISTS stores (
-    store_id TEXT PRIMARY KEY,
-    access_token TEXT,
-    created_at INTEGER
-  );
-`);
+// --- Postgres client (Supabase) ---
+const client = new Client({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } // Supabase lo requiere
+});
+
+async function ensureConnected() {
+  if (!client._connected) {
+    await client.connect();
+    client._connected = true;
+  }
+}
+
+async function initDb() {
+  await ensureConnected();
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS stores (
+      store_id TEXT PRIMARY KEY,
+      access_token TEXT,
+      created_at BIGINT
+    );
+  `);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS checkouts (
+      checkout_id TEXT PRIMARY KEY,
+      store_id TEXT REFERENCES stores(store_id),
+      cart_url TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at BIGINT,
+      check_after BIGINT,
+      processed_at BIGINT
+    );
+  `);
+}
 
 // --- Helpers ---
 function normalizeId(raw) {
@@ -43,32 +58,40 @@ function normalizeId(raw) {
   return s;
 }
 
-function getAccessToken(store_id_raw) {
+async function getAccessToken(store_id_raw) {
+  await ensureConnected();
   const store_id = normalizeId(store_id_raw);
-  let row = db.prepare(`SELECT access_token FROM stores WHERE store_id = ?`).get(store_id);
-  if (row) return row.access_token;
+  let res = await client.query(
+    `SELECT access_token FROM stores WHERE store_id = $1`,
+    [store_id]
+  );
+  if (res.rows.length) return res.rows[0].access_token;
   if (!store_id.endsWith('.0')) {
-    row = db.prepare(`SELECT access_token FROM stores WHERE store_id = ?`).get(store_id + '.0');
-    if (row) return row.access_token;
+    res = await client.query(
+      `SELECT access_token FROM stores WHERE store_id = $1`,
+      [store_id + '.0']
+    );
+    if (res.rows.length) return res.rows[0].access_token;
   }
   return null;
 }
 
-// --- Endpoint para registrar tienda ---
-app.post('/register_store', (req, res) => {
+// --- Routes ---
+
+app.post('/register_store', async (req, res) => {
   const raw_store_id = req.body.store_id;
   const access_token = req.body.access_token;
   const store_id = normalizeId(raw_store_id);
+  if (!store_id || !access_token) return res.status(400).json({ error: 'Faltan store_id o access_token' });
 
-  if (!store_id || !access_token) {
-    return res.status(400).json({ error: 'Faltan store_id o access_token' });
-  }
   const now = Date.now();
   try {
-    db.prepare(`
-      INSERT OR REPLACE INTO stores (store_id, access_token, created_at)
-      VALUES (?, ?, ?)
-    `).run(store_id, access_token, now);
+    await ensureConnected();
+    await client.query(
+      `INSERT INTO stores (store_id, access_token, created_at) VALUES ($1, $2, $3)
+       ON CONFLICT (store_id) DO UPDATE SET access_token = EXCLUDED.access_token, created_at = EXCLUDED.created_at`,
+      [store_id, access_token, now]
+    );
     return res.json({ ok: true, message: 'Tienda registrada' });
   } catch (e) {
     console.error('Error registrando tienda:', e);
@@ -76,26 +99,23 @@ app.post('/register_store', (req, res) => {
   }
 });
 
-// --- Endpoint que recibe checkout ---
-app.post('/checkout', (req, res) => {
+app.post('/checkout', async (req, res) => {
   let { store_id, cart_url } = req.body;
   let order_id = req.body.order_id || req.body.checkout_id;
   store_id = normalizeId(store_id);
   order_id = normalizeId(order_id);
-
-  if (!store_id || !order_id || !cart_url) {
-    return res.status(400).json({ error: 'Faltan store_id, order_id o cart_url' });
-  }
+  if (!store_id || !order_id || !cart_url) return res.status(400).json({ error: 'Faltan store_id, order_id o cart_url' });
 
   const now = Date.now();
   const checkAfter = now + 60 * 60 * 1000; // 60 minutos
 
   try {
-    db.prepare(`
-      INSERT OR IGNORE INTO checkouts
-        (checkout_id, store_id, cart_url, created_at, check_after)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(order_id, store_id, cart_url, now, checkAfter);
+    await ensureConnected();
+    await client.query(
+      `INSERT INTO checkouts (checkout_id, store_id, cart_url, created_at, check_after)
+       VALUES ($1, $2, $3, $4, $5) ON CONFLICT (checkout_id) DO NOTHING`,
+      [order_id, store_id, cart_url, now, checkAfter]
+    );
     return res.json({ ok: true, scheduled_for: new Date(checkAfter).toISOString() });
   } catch (e) {
     console.error('Error guardando checkout:', e);
@@ -103,83 +123,78 @@ app.post('/checkout', (req, res) => {
   }
 });
 
-// --- endpoint de debug para ver tiendas registradas ---
 const DEBUG_SECRET = process.env.DEBUG_SECRET || 'debug123';
 
-app.get('/debug/stores', (req, res) => {
+app.get('/debug/stores', async (req, res) => {
   const secret = req.query.secret;
-  if (secret !== DEBUG_SECRET) {
-    return res.status(403).json({ error: 'forbidden' });
-  }
-  const rows = db
-    .prepare(`
-      SELECT store_id, substr(access_token,1,10) || '...' AS token_preview, created_at
-      FROM stores
-    `)
-    .all();
-  const formatted = rows.map((r) => ({
+  if (secret !== DEBUG_SECRET) return res.status(403).json({ error: 'forbidden' });
+  await ensureConnected();
+  const result = await client.query(`
+    SELECT store_id, substring(access_token from 1 for 10) || '...' AS token_preview, created_at
+    FROM stores
+  `);
+  const formatted = result.rows.map((r) => ({
     store_id: r.store_id,
     access_token_preview: r.token_preview,
-    created_at: new Date(r.created_at).toISOString()
+    created_at: new Date(Number(r.created_at)).toISOString()
   }));
   res.json({ stores: formatted });
 });
 
-// --- endpoint de debug para checkouts ---
-app.get('/debug/checkouts', (req, res) => {
+app.get('/debug/checkouts', async (req, res) => {
   const secret = req.query.secret;
-  if (secret !== DEBUG_SECRET) {
-    return res.status(403).json({ error: 'forbidden' });
-  }
+  if (secret !== DEBUG_SECRET) return res.status(403).json({ error: 'forbidden' });
 
   const storeFilter = req.query.store_id ? normalizeId(req.query.store_id) : null;
   const statusFilter = req.query.status ? req.query.status : null;
 
-  let baseQuery = `SELECT checkout_id, store_id, cart_url, status, created_at, check_after, processed_at FROM checkouts`;
+  let base = `SELECT checkout_id, store_id, cart_url, status, created_at, check_after, processed_at FROM checkouts`;
   const conditions = [];
   const params = [];
-
   if (storeFilter) {
-    conditions.push(`store_id = ?`);
+    conditions.push(`store_id = $${params.length + 1}`);
     params.push(storeFilter);
   }
   if (statusFilter) {
-    conditions.push(`status = ?`);
+    conditions.push(`status = $${params.length + 1}`);
     params.push(statusFilter);
   }
-  if (conditions.length) {
-    baseQuery += ' WHERE ' + conditions.join(' AND ');
-  }
-  baseQuery += ' ORDER BY created_at DESC LIMIT 100';
+  if (conditions.length) base += ' WHERE ' + conditions.join(' AND ');
+  base += ' ORDER BY created_at DESC LIMIT 100';
 
-  const rows = db.prepare(baseQuery).all(...params);
-  const formatted = rows.map((r) => ({
+  await ensureConnected();
+  const result = await client.query(base, params);
+  const formatted = result.rows.map((r) => ({
     checkout_id: r.checkout_id,
     store_id: r.store_id,
     cart_url: r.cart_url,
     status: r.status,
-    created_at: new Date(r.created_at).toISOString(),
-    check_after: new Date(r.check_after).toISOString(),
-    processed_at: r.processed_at ? new Date(r.processed_at).toISOString() : null
+    created_at: new Date(Number(r.created_at)).toISOString(),
+    check_after: new Date(Number(r.check_after)).toISOString(),
+    processed_at: r.processed_at ? new Date(Number(r.processed_at)).toISOString() : null
   }));
   res.json({ checkouts: formatted });
 });
 
-// --- Worker cada minuto ---
-async function processPending() {
-  const now = Date.now();
-  const pending = db
-    .prepare(`SELECT * FROM checkouts WHERE status = 'pending' AND check_after <= ?`)
-    .all(now);
+// Endpoint manual para procesar pendientes (lo vas a llamar con cron)
+app.post('/run-pending', async (req, res) => {
+  const secret = req.headers['x-debug-secret'] || req.query.secret;
+  if (secret !== DEBUG_SECRET) return res.status(403).json({ error: 'forbidden' });
 
-  for (const row of pending) {
+  const now = Date.now();
+  await ensureConnected();
+  const pendingRes = await client.query(
+    `SELECT * FROM checkouts WHERE status = 'pending' AND check_after <= $1`,
+    [now]
+  );
+  for (const row of pendingRes.rows) {
     const checkout_id = normalizeId(row.checkout_id);
     const store_id = normalizeId(row.store_id);
     const cart_url = row.cart_url;
 
     console.log(`[worker] procesando ${checkout_id} de store ${store_id}`);
 
-    const accessToken = getAccessToken(store_id);
+    const accessToken = await getAccessToken(store_id);
     if (!accessToken) {
       console.warn(`No hay access_token para store_id ${store_id}, saltando`);
       continue;
@@ -201,18 +216,12 @@ async function processPending() {
         continue;
       }
       orderData = await resp.json();
-      console.log('[tiendanube response]', {
-        checkout_id,
-        store_id,
-        completed_at_raw: orderData.completed_at,
-        raw: orderData
-      });
+      console.log('[tiendanube response]', { checkout_id, store_id, completed_at_raw: orderData.completed_at, raw: orderData });
     } catch (err) {
       console.error('Error en fetch a Tiendanube:', err);
       continue;
     }
 
-    // Extraer el string real de completed_at
     let completedDateRaw = null;
     if (orderData && orderData.completed_at) {
       if (typeof orderData.completed_at === 'string') {
@@ -225,35 +234,22 @@ async function processPending() {
     const converted = typeof completedDateRaw === 'string' && completedDateRaw.trim() !== sentinel;
 
     if (converted) {
-      db.prepare(`
-        UPDATE checkouts
-        SET status='converted', processed_at=?
-        WHERE checkout_id=?
-      `).run(now, row.checkout_id);
+      await client.query(`UPDATE checkouts SET status='converted', processed_at=$1 WHERE checkout_id=$2`, [now, checkout_id]);
       console.log(`Checkout ${checkout_id} convertido, marcado.`);
       continue;
     }
 
-    // --- Nueva regla: si no hay teléfono de contacto, marcamos y no disparamos ---
     const contactPhone = orderData.contact_phone ?? orderData.raw?.contact_phone;
     if (!contactPhone || String(contactPhone).trim() === '') {
-      db.prepare(`
-        UPDATE checkouts
-        SET status='no_contact', processed_at=?
-        WHERE checkout_id=?
-      `).run(now, row.checkout_id);
+      await client.query(`UPDATE checkouts SET status='no_contact', processed_at=$1 WHERE checkout_id=$2`, [now, checkout_id]);
       console.log(`Checkout ${checkout_id} tiene contact_phone vacío, no se dispara recuperación.`);
       continue;
     }
 
-    // Si no se convirtió y tiene teléfono: POST a Bubble (endpoint final de prueba)
+    // POST a Bubble final
     try {
       const bubbleUrl = 'https://dashboard.alerti.app/version-test/api/1.1/wf/render_checkout';
-      const payload = {
-        store_id,
-        order_id: checkout_id,
-        cart_url
-      };
+      const payload = { store_id, order_id: checkout_id, cart_url };
       console.log('Disparando workflow a Bubble en test', { url: bubbleUrl, payload });
 
       const bubbleResp = await fetch(bubbleUrl, {
@@ -270,24 +266,25 @@ async function processPending() {
       }
       await bubbleResp.json();
 
-      db.prepare(`
-        UPDATE checkouts
-        SET status='abandoned', processed_at=?
-        WHERE checkout_id=?
-      `).run(now, row.checkout_id);
-
+      await client.query(`UPDATE checkouts SET status='abandoned', processed_at=$1 WHERE checkout_id=$2`, [now, checkout_id]);
       console.log(`Recuperación disparada para ${checkout_id}`);
     } catch (err) {
       console.error('Error posteando a Bubble:', err);
     }
   }
-}
 
-setInterval(() => {
-  processPending().catch((e) => console.error('Worker error:', e));
-}, 60 * 1000);
+  return res.json({ ok: true, processed: pendingRes.rows.length });
+});
 
 app.get('/health', (req, res) => res.send('ok'));
+
+(async () => {
+  try {
+    await initDb();
+  } catch (e) {
+    console.error('Error inicializando DB:', e);
+  }
+})();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
