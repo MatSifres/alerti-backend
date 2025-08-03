@@ -8,7 +8,7 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // habilita CORS abierto para pruebas
+app.use(cors()); // CORS abierto para testing
 
 // --- DB ---
 const db = new Database('checkouts.db');
@@ -194,7 +194,19 @@ async function processPending() {
       continue;
     }
 
-    // Si no se convirtió: POST a Bubble (nuevo endpoint de prueba)
+    // --- Nueva regla: si no hay teléfono de contacto, marcamos y no disparamos ---
+    const contactPhone = orderData.contact_phone ?? orderData.raw?.contact_phone;
+    if (!contactPhone || String(contactPhone).trim() === '') {
+      db.prepare(`
+        UPDATE checkouts
+        SET status='no_contact', processed_at=?
+        WHERE checkout_id=?
+      `).run(now, row.checkout_id);
+      console.log(`Checkout ${checkout_id} tiene contact_phone vacío, no se dispara recuperación.`);
+      continue;
+    }
+
+    // Si no se convirtió y tiene teléfono: POST a Bubble (nuevo endpoint de prueba)
     try {
       const bubbleUrl = 'https://mailsqueeze.bubbleapps.io/version-test/api/1.1/wf/render_checkout/initialize';
       const payload = {
