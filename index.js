@@ -8,18 +8,7 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
-
-// CORS explícito (podés cambiar origin a '*' para pruebas rápidas)
-app.use(
-  cors({
-    origin: ['*'],
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type'],
-    preflightContinue: false,
-    optionsSuccessStatus: 204
-  })
-);
-app.options('*', cors()); // responder preflight para todo
+app.use(cors()); // habilita CORS abierto para pruebas
 
 // --- DB ---
 const db = new Database('checkouts.db');
