@@ -47,7 +47,6 @@ function getAccessToken(store_id_raw) {
   const store_id = normalizeId(store_id_raw);
   let row = db.prepare(`SELECT access_token FROM stores WHERE store_id = ?`).get(store_id);
   if (row) return row.access_token;
-  // por las dudas probamos con ".0"
   if (!store_id.endsWith('.0')) {
     row = db.prepare(`SELECT access_token FROM stores WHERE store_id = ?`).get(store_id + '.0');
     if (row) return row.access_token;
@@ -163,7 +162,7 @@ async function processPending() {
       console.log('[tiendanube response]', {
         checkout_id,
         store_id,
-        completed_at: orderData.completed_at,
+        completed_at_raw: orderData.completed_at,
         raw: orderData
       });
     } catch (err) {
@@ -171,9 +170,17 @@ async function processPending() {
       continue;
     }
 
-    const completedAt = orderData?.completed_at;
+    // Extraer el string real de completed_at ya sea que venga como string u objeto
+    let completedDateRaw = null;
+    if (orderData && orderData.completed_at) {
+      if (typeof orderData.completed_at === 'string') {
+        completedDateRaw = orderData.completed_at;
+      } else if (typeof orderData.completed_at === 'object' && orderData.completed_at.date) {
+        completedDateRaw = orderData.completed_at.date;
+      }
+    }
     const sentinel = '-0001-11-30 00:00:00.000000';
-    const converted = typeof completedAt === 'string' && completedAt.trim() !== sentinel;
+    const converted = typeof completedDateRaw === 'string' && completedDateRaw.trim() !== sentinel;
 
     if (converted) {
       db.prepare(`
@@ -185,20 +192,26 @@ async function processPending() {
       continue;
     }
 
-    // Si no se convirtió: POST a Bubble (versión de prueba)
+    // Si no se convirtió: POST a Bubble (nuevo endpoint de prueba)
     try {
-      const bubbleResp = await fetch('https://dashboard.alerti.app/api/1.1/wf/render_checkout', {
+      const bubbleUrl = 'https://mailsqueeze.bubbleapps.io/version-test/api/1.1/wf/render_checkout/initialize';
+      const payload = {
+        store_id,
+        order_id: checkout_id,
+        cart_url
+      };
+      console.log('Disparando workflow a Bubble en test', { url: bubbleUrl, payload });
+
+      const bubbleResp = await fetch(bubbleUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          store_id,
-          order_id: checkout_id,
-          cart_url
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!bubbleResp.ok) {
         console.warn(`Bubble devolvió ${bubbleResp.status} para ${checkout_id}`);
+        const text = await bubbleResp.text();
+        console.warn('Respuesta de Bubble:', text);
         continue;
       }
       await bubbleResp.json();
@@ -216,7 +229,6 @@ async function processPending() {
   }
 }
 
-// loop
 setInterval(() => {
   processPending().catch(e => console.error('Worker error:', e));
 }, 60 * 1000);
