@@ -8,7 +8,7 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // CORS abierto para testing
+app.use(cors()); // CORS abierto; podés restringir después
 
 // --- DB ---
 const db = new Database('checkouts.db');
@@ -88,7 +88,7 @@ app.post('/checkout', (req, res) => {
   }
 
   const now = Date.now();
-  const checkAfter = now + 1 * 60 * 1000; // 1 minuto para testing
+  const checkAfter = now + 60 * 60 * 1000; // 60 minutos
 
   try {
     db.prepare(`
@@ -206,9 +206,9 @@ async function processPending() {
       continue;
     }
 
-    // Si no se convirtió y tiene teléfono: POST a Bubble (nuevo endpoint de prueba)
+    // Si no se convirtió y tiene teléfono: POST a Bubble (endpoint final de prueba)
     try {
-      const bubbleUrl = 'https://mailsqueeze.bubbleapps.io/version-test/api/1.1/wf/render_checkout/';
+      const bubbleUrl = 'https://dashboard.alerti.app/version-test/api/1.1/wf/render_checkout';
       const payload = {
         store_id,
         order_id: checkout_id,
