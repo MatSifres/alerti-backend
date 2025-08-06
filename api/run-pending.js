@@ -19,7 +19,7 @@ export default async function handler(req, res) {
 
   const now = Date.now();
 
-  // 1) Traer pendientes cuyo check_after ya pasó
+  // 1) Traer todos los pendientes cuyo check_after ya pasó
   const { data: pendings, error: pendErr } = await supabase
     .from('checkouts')
     .select('*')
@@ -39,23 +39,24 @@ export default async function handler(req, res) {
     const cart_url    = row.cart_url;
     console.log(`[worker] procesando ${checkout_id} de store ${store_id}`);
 
-    // 2) Obtener access_token
+    // 2) Obtener access_token de Supabase
     const { data: storeData, error: storeErr } = await supabase
       .from('stores')
       .select('access_token')
       .eq('store_id', store_id)
       .single();
     if (storeErr || !storeData?.access_token) {
-      console.warn(`No access_token para store ${store_id}`);
+      console.warn(`No access_token para store ${store_id}, saltando`);
       continue;
     }
     const accessToken = storeData.access_token;
 
-    // 3) Consultar TiendaNube
+    // 3) Consultar TiendaNube con TODOS los campos solicitados
     let orderData;
     try {
       const resp = await fetch(
-        `https://api.tiendanube.com/v1/${store_id}/orders/${checkout_id}?fields=completed_at,contact_phone`,
+        `https://api.tiendanube.com/v1/${store_id}/orders/${checkout_id}` +
+        `?fields=id,number,token,contact_name,contact_phone,shipping_store_branch_name,shipping_pickup_type,shipping_store_branch_name,shipping_store_branch_extra,shipping_carrier_name,completed_at,total,products,payment_status,shipping_status`,
         {
           method: 'GET',
           headers: {
@@ -66,7 +67,7 @@ export default async function handler(req, res) {
       );
       if (!resp.ok) {
         console.warn(`TiendaNube devolvió ${resp.status} para ${checkout_id}`);
-        // Marcar error técnico en TiendaNube para no reintentar
+        // Marcar error para no reintentar
         await supabase
           .from('checkouts')
           .update({ status: 'error', processed_at: now })
@@ -76,7 +77,7 @@ export default async function handler(req, res) {
       }
       orderData = await resp.json();
     } catch (err) {
-      console.error('Error fetch Tiendanube:', err);
+      console.error('Error fetch a TiendaNube:', err);
       await supabase
         .from('checkouts')
         .update({ status: 'error', processed_at: now })
@@ -85,7 +86,7 @@ export default async function handler(req, res) {
       continue;
     }
 
-    // 4) Verificar si convertido
+    // 4) Verificar si se convirtió (completed_at distinto del sentinel)
     let completedRaw = null;
     if (orderData.completed_at) {
       completedRaw = typeof orderData.completed_at === 'string'
@@ -104,7 +105,7 @@ export default async function handler(req, res) {
       continue;
     }
 
-    // 5) Verificar si falta teléfono
+    // 5) Verificar si falta teléfono de contacto
     const phone = orderData.contact_phone ?? orderData.raw?.contact_phone;
     if (!phone || String(phone).trim() === '') {
       await supabase
@@ -116,18 +117,26 @@ export default async function handler(req, res) {
       continue;
     }
 
-    // 6) Disparar workflow en Bubble
+    // 6) Disparar workflow en Bubble enviando TODOS los datos de orderData
     try {
-      const bubbleUrl = 'https://dashboard.alerti.app/api/1.1/wf/render_checkout';
+      const bubbleUrl = 'https://mailsqueeze.bubbleapps.io/api/1.1/wf/render_checkout/';
+      const payload = {
+        store_id,
+        order_id: checkout_id,
+        cart_url,
+        order: orderData
+      };
+      console.log('Enviando a Bubble payload completo', payload);
+
       const bubbleResp = await fetch(bubbleUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store_id, order_id: checkout_id, cart_url })
+        body: JSON.stringify(payload)
       });
 
       if (!bubbleResp.ok) {
         console.warn(`Bubble devolvió ${bubbleResp.status} para ${checkout_id}`);
-        // MARCAR ERROR y no reintentar
+        // Marcar error y no reintentar
         await supabase
           .from('checkouts')
           .update({ status: 'error', processed_at: now })
