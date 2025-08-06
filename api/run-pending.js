@@ -118,7 +118,7 @@ export default async function handler(req, res) {
 
     // 6) Disparar workflow en Bubble
     try {
-      const bubbleUrl = 'https://dashboard.alerti.app/version-test/api/1.1/wf/render_checkout';
+      const bubbleUrl = 'https://dashboard.alerti.app/api/1.1/wf/render_checkout';
       const bubbleResp = await fetch(bubbleUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
