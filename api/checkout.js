@@ -4,7 +4,18 @@ import { supabase } from '../lib/db.js';
 import { normalizeId } from '../lib/helpers.js';
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
+  // — CORS —
+  res.setHeader('Access-Control-Allow-Origin', '*');            // o tu dominio: 'https://www.fuled.com.ar'
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).send('Method Not Allowed');
+  }
+
   const { store_id: raw_store_id, cart_url } = req.body;
   let order_id = req.body.order_id || req.body.checkout_id;
   const store_id = normalizeId(raw_store_id);
@@ -15,7 +26,7 @@ export default async function handler(req, res) {
   }
 
   const now = Date.now();
-  const checkAfter = now + 60 * 60 * 1000;
+  const checkAfter = now + 60 * 60 * 1000; // 60 minutos
 
   const { error } = await supabase
     .from('checkouts')
